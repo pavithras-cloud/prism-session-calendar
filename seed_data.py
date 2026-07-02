@@ -36,12 +36,32 @@ FACULTY = {
     "Meera A": "internal", "Rajeev": "internal", "PRISM Team": "internal", "Internal HL/DC": "internal",
     "Maansi": "external", "Sachin Shetty": "external", "CIBI": "external", "Rajiv": "external",
     "Sachin": "external", "Gagan": "external", "Abhishek Bij": "external", "Shilpa Singh": "external",
+    "Rajiv Bhakat": "external", "Maansi G": "external", "Abhishek/Design head": "external",
+    "Via Email / WhatsApp": "internal", "Share via email": "internal", "To be decided": "internal",
 }
 
 # Participants (email IDs) per pod -> invited on Google Calendar sync alongside owner + lead.
 PARTICIPANTS = {
-    "Foundation (DC)": [],
     "Design Manager": [], "Entrepreneurship": [], "Campus Capstone": [],
+    "Foundation (DC)": [
+        "diksha.sharma@homelane.com", "pradeep.g@homelane.com", "swarnnim.jaiswal@homelane.com",
+        "subhankar.saha@homelane.com", "pradipta.paul@homelane.com", "shruti.su@homelane.com",
+        "ayasha.d@homelane.com", "aanchal.haveliker@homelane.com", "sanjay.peters@homelane.com",
+        "tejaswini.pawar@homelane.com", "kavya.m@homelane.com", "simran.agarwal@homelane.com",
+        "vrushali.chavan@homelane.com", "deekonda.lakhmi@homelane.com", "shreya.rajesh@homelane.com",
+        "swarnika.b@homelane.com", "sandhya.ravichandran@homelane.com", "mariyam.asif@homelane.com",
+        "tanushree.gupta@homelane.com", "archana.dubey@homelane.com", "tanya.singh@homelane.com",
+        "dhruv.gajjar@homelane.com", "himashree.nath@homelane.com", "syed.esfar@homelane.com",
+        "mythili.akanksha@homelane.com", "rahul.krishnan@homelane.com", "devshree.g@homelane.com",
+        "vishnupriya.a@homelane.com", "choragudi.khyathi@designcafe.com", "jaicy.valliara@designcafe.com",
+        "purnima.gupta@designcafe.com", "prashika.phillips@designcafe.com", "khushi.agarwal1@designcafe.com",
+        "powlushi.dutta@designcafe.com", "pranjal.patil@designcafe.com", "kritika.shah@designcafe.com",
+        "roshini.s@designcafe.com", "riya.panickar@designcafe.com", "sabita.bisht@designcafe.com",
+        "ritika.singh@designcafe.com", "sahideena.afrin@designcafe.com", "indrani.das@designcafe.com",
+        "sejal.shubhanand@homelane.com",
+        "sayali.thakur@homelane.com", "pratheeka.k@homelane.com", "priti.sutar@homelane.com",
+        "pratiksha.thorat@homelane.com", "kunali.gourigolla@homelane.com",
+    ],
     "Dovetail": [
         "Poulomi.Banik@homelane.com", "Anchita.Nair@homelane.com", "Chandrika.Sah@homelane.com",
         "sheethal.shetty@homelane.com", "akshaya.santhanam@homelane.com", "vaibhav.s2@homelane.com",
@@ -135,4 +155,20 @@ SESSIONS = [
     _s("Advanced (Sr. DC)", "module", "Lab Day 3: From Strong Designers to Strong Systems", "Sachin", "external", "2026-09-15", "10:00", "15:30", "confirmed", "inperson", "", "Lab Day 3. 5.4 hrs, in-person. 4C: Craft + Contribution. Time TBC."),
     _s("Advanced (Sr. DC)", "module", "Lab Day 4: Culmination", "Internal HL/DC", "internal", "2026-09-16", "10:00", "14:00", "confirmed", "inperson", "", "Lab Day 4. 4 hrs, in-person. Time TBC."),
     _s("Advanced (Sr. DC)", "activity", "Post Read: Playbook", "PRISM Team", "internal", "2026-09-22", "10:00", "11:00", "proposed", "virtual", "", "Post-read playbook, self-paced. Placeholder time."),
+
+    # ---- Foundation (DC) — PRISM Junior Cohort, Jun-Sep 2026 ----
+    _s("Foundation (DC)", "module", "Orientation", "PRISM Team", "internal", "2026-06-12", "12:00", "13:00", "confirmed", "virtual", "", "Program kickoff. 1 hr."),
+    _s("Foundation (DC)", "assessment", "Pre-Program Assessment", "Via Email / WhatsApp", "internal", "2026-06-12", "10:00", "11:00", "proposed", "virtual", "", "1 hr. Shared via email/WhatsApp. Time TBC."),
+    _s("Foundation (DC)", "module", "Design Studio (Lab)", "Rajiv Bhakat", "external", "2026-06-15", "10:00", "16:00", "confirmed", "inperson", "", "Lab. 6 hrs, in-person. Time TBC."),
+    _s("Foundation (DC)", "module", "Customer Experience Lab", "Rajiv Bhakat", "external", "2026-06-16", "09:00", "17:00", "confirmed", "inperson", "", "Lab. 8 hrs, in-person. Time TBC."),
+    _s("Foundation (DC)", "module", "Masterclass 1: The Power of Consistency", "Maansi G", "external", "2026-07-02", "11:00", "13:00", "confirmed", "virtual", "", "2 hrs."),
+    _s("Foundation (DC)", "fireside", "Fireside Chat: Book / Artist / Leadership Talk", "To be decided", "internal", "2026-07-09", "11:00", "12:00", "proposed", "virtual", "", "1 hr. Faculty & time TBC."),
+    _s("Foundation (DC)", "module", "Masterclass 2: Bringing Lifestyles to Life", "Rajiv", "external", "2026-07-15", "11:00", "13:00", "confirmed", "virtual", "", "2 hrs."),
+    _s("Foundation (DC)", "module", "Masterclass 3: The Art & Science of Customer Pitches", "Gagan", "external", "2026-08-06", "11:00", "13:00", "confirmed", "virtual", "", "2 hrs."),
+    _s("Foundation (DC)", "module", "Masterclass 4: The Strategic Shift", "Abhishek/Design head", "external", "2026-08-12", "11:00", "13:00", "confirmed", "virtual", "", "2 hrs."),
+    _s("Foundation (DC)", "assessment", "Design Challenge", "Share via email", "internal", "2026-08-19", "10:00", "11:00", "confirmed", "virtual", "", "Shared via email. Time TBC."),
+    _s("Foundation (DC)", "assessment", "Breakthrough Project Submission", "PRISM Team", "internal", "2026-09-03", "17:00", "18:00", "confirmed", "virtual", "", "Submission deadline (by end of day)."),
+    _s("Foundation (DC)", "module", "Lab: From Designers to Trusted Decision Partners", "Sachin", "external", "2026-09-08", "10:00", "14:30", "confirmed", "inperson", "", "Lab. 4.5 hrs, in-person. Time TBC."),
+    _s("Foundation (DC)", "module", "Lab: PRISM Culmination Day", "Internal HL/DC", "internal", "2026-09-09", "10:00", "14:30", "confirmed", "inperson", "", "Lab. 4.5 hrs, in-person. Time TBC."),
+    _s("Foundation (DC)", "activity", "Post Read: MC Takeaway Document", "PRISM Team", "internal", "2026-09-15", "10:00", "11:00", "proposed", "virtual", "", "Post-read takeaway document, self-paced."),
 ]
