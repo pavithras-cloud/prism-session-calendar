@@ -41,12 +41,25 @@ Restart the app: the **Sync to Google Calendar** button now creates/updates even
 with attendees. Each event's id is saved back onto the session, so re-syncing
 **updates** events instead of duplicating them.
 
-## Step 3 — Shared data (multi-user)
+## Step 3 — Shared data (multi-user)  ✅ built in
 
-The local `data_store.json` is single-machine. For a team-shared source of truth,
-replace the bodies of the functions in `store.py` with a Google Sheets adapter
-(tabs: `Sessions`, `Participants`, `PodLeads`) using `gspread` — the rest of the
-app is unchanged because it only calls `store.*`.
+The app auto-selects its backend:
+
+- **Local file** (`backend_local.py` → `data_store.json`) when Sheets isn't configured.
+- **Google Sheets** (`backend_sheets.py`) when it is — shared, persistent, multi-user.
+
+To switch on Google Sheets:
+
+1. Create a Google Sheet (any blank one).
+2. Share it with the **service-account client_email** (from `[gcp_service_account]`) as **Editor**.
+3. Copy the sheet ID (the string in the URL between `/d/` and `/edit`) into
+   `[sheets].sheet_id` in `secrets.toml`.
+
+On first load the app creates three tabs — `Sessions`, `Participants`, `PodLeads` —
+and seeds them from `seed_data.py`. After that, every edit reads/writes the sheet,
+so all users share one source of truth and edits persist across restarts. The
+sidebar shows which backend is active. (This is also what makes edits stick on
+Streamlit Community Cloud, whose local disk is ephemeral.)
 
 ## Step 4 — Real login + roles
 

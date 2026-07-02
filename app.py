@@ -45,6 +45,8 @@ with st.sidebar:
     st.caption("Prototype: role is a simulator. Real login maps identity automatically.")
     st.divider()
     pod_filter = st.selectbox("Filter by pod", ["All pods"] + POD_NAMES)
+    st.divider()
+    st.caption(f"Data source: {store.BACKEND}")
 
 st.title("Prism Academy — Session Calendar")
 st.caption("Faculty sessions across pods, month on month. "
