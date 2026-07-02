@@ -1,0 +1,879 @@
+"""Prism Academy — Session Calendar (Streamlit).
+
+Run locally to validate:  streamlit run app.py
+No Google setup needed to check it — data persists to data_store.json and you
+can export .ics. Add secrets later to turn on live Google Calendar sync.
+"""
+
+import datetime as dt
+
+import streamlit as st
+from streamlit_calendar import calendar
+
+import seed_data
+import store
+import calendar_sync as gc
+
+st.set_page_config(page_title="Prism Academy — Session Calendar", page_icon="📅", layout="wide")
+
+POD_COLORS = {p["short"]: p["color"] for p in seed_data.PODS}
+POD_FULL = {p["short"]: p["name"] for p in seed_data.PODS}
+POD_NAMES = list(POD_COLORS)
+TYPES = ["module", "fireside", "assessment", "activity"]
+
+
+# ------------------------------------------------------------------ identity
+def resolve_role(email):
+    email = (email or "").lower()
+    if email == seed_data.ADMIN_EMAIL.lower():
+        return "admin"
+    leads = store.get_pod_leads()
+    owners = set()
+    for v in leads.values():
+        owners.add((v.get("owner") or "").lower())
+        owners.add((v.get("lead") or "").lower())
+    return "pod" if email in owners else "view"
+
+
+# In real deployment, replace this block with st.login()/st.user (see README).
+with st.sidebar:
+    st.markdown("### Prism Academy")
+    st.caption("Session calendar")
+    mode = st.radio("Preview as", ["Program admin", "Pod owner", "Others"], key="rolepick")
+    role = {"Program admin": "admin", "Pod owner": "pod", "Others": "view"}[mode]
+    can_edit = role in ("admin", "pod")
+    st.caption("Prototype: role is a simulator. Real login maps identity automatically.")
+    st.divider()
+    pod_filter = st.selectbox("Filter by pod", ["All pods"] + POD_NAMES)
+    st.divider()
+    st.caption(f"Data source: {store.BACKEND}")
+
+st.title("Prism Academy — Session Calendar")
+st.caption("Faculty sessions across pods, month on month. "
+           + ("Full access." if role == "admin" else "Edit access." if role == "pod" else "View only."))
+
+sessions = store.get_sessions()
+if pod_filter != "All pods":
+    sessions = [s for s in sessions if s["pod"] == pod_filter]
+
+tab_cal, tab_sessions, tab_people = st.tabs(["📅 Calendar", "📋 Sessions", "👥 Participants & leads"])
+
+# ------------------------------------------------------------------ calendar
+with tab_cal:
+    events = [{
+        "id": s["id"],
+        "title": f'{s["title"]} · {s["faculty"]}',
+        "start": f'{s["date"]}T{s["start"]}:00',
+        "end": f'{s["date"]}T{s["end"]}:00',
+        "backgroundColor": POD_COLORS.get(s["pod"], "#4A6741"),
+        "borderColor": POD_COLORS.get(s["pod"], "#4A6741"),
+    } for s in sessions]
+    calendar(events=events, options={
+        "initialView": "dayGridMonth",
+        "initialDate": "2026-06-01",
+        "headerToolbar": {"left": "prev,next today", "center": "title", "right": "dayGridMonth,listMonth"},
+        "height": 720,
+    }, key="cal")
+
+    st.markdown("**Programs:** " + "  ".join(
+        f'<span style="color:{POD_COLORS[p]}">■</span> {p}' for p in POD_NAMES), unsafe_allow_html=True)
+
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        if gc.is_configured():
+            if st.button("🔄 Sync visible sessions to Google Calendar", disabled=not can_edit):
+                ok = 0
+                for s in sessions:
+                    try:
+                        gid = gc.upsert_event(s, store.invitees(s["pod"]))
+                        store.set_gcal_id(s["id"], gid)
+                        ok += 1
+                    except Exception as e:  # noqa
+                        st.warning(f'{s["title"]}: {e}')
+                st.success(f"Synced {ok} session(s) to Google Calendar.")
+        else:
+            st.info("Google Calendar sync not configured yet — using .ics export. See README.")
+    with c2:
+        ics = gc.build_ics(sessions, store.invitees)
+        st.download_button("⬇️ Export .ics (import to Google Calendar)", ics,
+                           file_name="prism-sessions.ics", mime="text/calendar")
+
+# ------------------------------------------------------------------ sessions
+with tab_sessions:
+    if can_edit:
+        with st.expander("➕ Add a session", expanded=False):
+            with st.form("add_session", clear_on_submit=True):
+                a, b = st.columns(2)
+                pod = a.selectbox("Pod", POD_NAMES)
+                typ = b.selectbox("Type", TYPES)
+                title = st.text_input("Title")
+                fac = st.text_input("Faculty")
+                fk = st.radio("Faculty type", ["internal", "external"],
+                              index=0 if seed_data.FACULTY.get(fac, "internal") == "internal" else 1,
+                              horizontal=True)
+                d = st.date_input("Date", value=dt.date(2026, 6, 1))
+                t1, t2 = st.columns(2)
+                start = t1.time_input("Start", value=dt.time(11, 0))
+                end = t2.time_input("End", value=dt.time(12, 0))
+                mode_ = st.radio("Mode", ["virtual", "inperson"], horizontal=True)
+                loc = st.text_input("Meeting link / venue")
+                status = st.radio("Status", ["proposed", "confirmed"], horizontal=True)
+                note = st.text_area("Notes")
+                if st.form_submit_button("Save session"):
+                    store.save_session({
+                        "pod": pod, "type": typ, "title": title, "faculty": fac, "fkind": fk,
+                        "date": str(d), "start": start.strftime("%H:%M"), "end": end.strftime("%H:%M"),
+                        "mode": mode_, "loc": loc, "status": status, "note": note, "gcal_id": "",
+                    })
+                    st.success("Saved.")
+                    st.rerun()
+
+    st.subheader("Sessions")
+    for s in sorted(sessions, key=lambda x: (x["date"], x["start"])):
+        badge = "✅" if s["status"] == "confirmed" else "🟡"
+        tag = "" if s["type"] == "module" else f' · {s["type"].title()}'
+        with st.expander(f'{badge} {s["date"]} {s["start"]}  |  {s["title"]}  ·  {s["pod"]}{tag}'):
+            st.write(f'**Faculty:** {s["faculty"]} ({s["fkind"]})   |   **Mode:** {s["mode"]}'
+                     f'   |   **Where:** {s.get("loc") or "—"}')
+            if s.get("note"):
+                st.caption(s["note"])
+            inv = store.invitees(s["pod"])
+            st.caption(f'Invitees on sync: {len(inv)} — {", ".join(inv[:5])}'
+                       + (f' +{len(inv) - 5} more' if len(inv) > 5 else ""))
+            if can_edit:
+                cc1, cc2 = st.columns([1, 5])
+                if cc1.button("Toggle status", key=f'tog{s["id"]}'):
+                    s["status"] = "proposed" if s["status"] == "confirmed" else "confirmed"
+                    store.save_session(s)
+                    st.rerun()
+                if cc2.button("Delete", key=f'del{s["id"]}'):
+                    store.delete_session(s["id"])
+                    st.rerun()
+
+# ------------------------------------------------------------------ people
+with tab_people:
+    st.subheader("Participants & pod leads")
+    if role == "admin":
+        st.caption("You can reassign pod owner and content lead, and manage participants.")
+    elif role == "pod":
+        st.caption("You can manage participants. Pod owner / content lead are set by the program admin.")
+    else:
+        st.caption("View only.")
+
+    leads = store.get_pod_leads()
+    parts = store.get_participants()
+    for pod in POD_NAMES:
+        with st.expander(f'{pod}  ·  {len(parts.get(pod, []))} participant(s)'):
+            st.caption(POD_FULL[pod])
+            L = leads.get(pod, {"owner": "", "lead": ""})
+            if role == "admin":
+                oc, lc = st.columns(2)
+                new_o = oc.text_input("Pod owner", L.get("owner", ""), key=f'o{pod}')
+                new_l = lc.text_input("Content lead", L.get("lead", ""), key=f'l{pod}')
+                if oc.button("Save owner", key=f'so{pod}'):
+                    store.set_pod_lead(pod, "owner", new_o.strip().lower()); st.rerun()
+                if lc.button("Save lead", key=f'sl{pod}'):
+                    store.set_pod_lead(pod, "lead", new_l.strip().lower()); st.rerun()
+            else:
+                st.write(f'**Pod owner:** {L.get("owner") or "—"}   |   **Content lead:** {L.get("lead") or "—"}')
+
+            st.write("**Participants**")
+            for e in parts.get(pod, []):
+                org = "DC" if e.lower().endswith("@designcafe.com") else "HL"
+                row = st.columns([6, 1])
+                row[0].write(f'`{org}`  {e}')
+                if can_edit and row[1].button("✕", key=f'rm{pod}{e}'):
+                    store.remove_participant(pod, e); st.rerun()
+            if can_edit:
+                nc = st.columns([6, 1])
+                new_e = nc[0].text_input("Add participant email", key=f'add{pod}', label_visibility="collapsed",
+                                         placeholder="name@homelane.com or name@designcafe.com")
+                if nc[1].button("Add", key=f'addb{pod}') and new_e.strip():
+                    store.add_participant(pod, new_e.strip().lower()); st.rerun()
+
+"""Local JSON backend — single machine, zero setup. Used when Google Sheets
+is not configured. Persists to data_store.json next to this file.
+"""
+
+import json
+import os
+import uuid
+
+import seed_data
+
+__all__ = ["get_sessions", "save_session", "delete_session", "set_gcal_id",
+           "get_participants", "add_participant", "remove_participant",
+           "get_pod_leads", "set_pod_lead", "invitees"]
+
+_PATH = os.path.join(os.path.dirname(__file__), "data_store.json")
+
+
+def _default():
+    sessions = []
+    for s in seed_data.SESSIONS:
+        s = dict(s)
+        s["id"] = uuid.uuid4().hex[:10]
+        sessions.append(s)
+    return {
+        "sessions": sessions,
+        "participants": {k: list(v) for k, v in seed_data.PARTICIPANTS.items()},
+        "pod_leads": {k: dict(v) for k, v in seed_data.POD_LEADS.items()},
+    }
+
+
+def _read():
+    if not os.path.exists(_PATH):
+        data = _default()
+        _write(data)
+        return data
+    with open(_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _write(data):
+    with open(_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def get_sessions():
+    return _read()["sessions"]
+
+
+def save_session(rec):
+    data = _read()
+    if rec.get("id"):
+        for i, s in enumerate(data["sessions"]):
+            if s["id"] == rec["id"]:
+                data["sessions"][i] = rec
+                break
+        else:
+            data["sessions"].append(rec)
+    else:
+        rec["id"] = uuid.uuid4().hex[:10]
+        data["sessions"].append(rec)
+    _write(data)
+    return rec
+
+
+def delete_session(sid):
+    data = _read()
+    data["sessions"] = [s for s in data["sessions"] if s["id"] != sid]
+    _write(data)
+
+
+def set_gcal_id(sid, gcal_id):
+    data = _read()
+    for s in data["sessions"]:
+        if s["id"] == sid:
+            s["gcal_id"] = gcal_id
+    _write(data)
+
+
+def get_participants():
+    return _read()["participants"]
+
+
+def add_participant(pod, email):
+    data = _read()
+    data["participants"].setdefault(pod, [])
+    if email not in data["participants"][pod]:
+        data["participants"][pod].append(email)
+    _write(data)
+
+
+def remove_participant(pod, email):
+    data = _read()
+    data["participants"][pod] = [e for e in data["participants"].get(pod, []) if e != email]
+    _write(data)
+
+
+def get_pod_leads():
+    return _read()["pod_leads"]
+
+
+def set_pod_lead(pod, field, email):
+    data = _read()
+    data["pod_leads"].setdefault(pod, {"owner": "", "lead": ""})
+    data["pod_leads"][pod][field] = email
+    _write(data)
+
+
+def invitees(pod):
+    leads = get_pod_leads().get(pod, {})
+    out = []
+    for e in (leads.get("owner", ""), leads.get("lead", "")):
+        if e and e not in out:
+            out.append(e)
+    for e in get_participants().get(pod, []):
+        if e not in out:
+            out.append(e)
+    return out
+
+"""Google Sheets backend — shared, multi-user, persistent.
+
+Enabled automatically when secrets.toml has [gcp_service_account] and
+[sheets].sheet_id (see secrets.toml.example). Share the spreadsheet with the
+service-account email as Editor. On first use it creates the Sessions /
+Participants / PodLeads tabs and seeds them from seed_data.
+
+Same public API as backend_local, so the app code is identical either way.
+All writes use RAW input so dates/times are stored as plain text (no
+auto-conversion), and reads are cached briefly and flushed after each write.
+"""
+
+import uuid
+
+import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
+
+import seed_data
+
+__all__ = ["get_sessions", "save_session", "delete_session", "set_gcal_id",
+           "get_participants", "add_participant", "remove_participant",
+           "get_pod_leads", "set_pod_lead", "invitees"]
+
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SESSION_COLS = ["id", "pod", "type", "title", "faculty", "fkind", "date",
+                "start", "end", "status", "mode", "loc", "note", "gcal_id"]
+RAW = "RAW"
+
+
+@st.cache_resource
+def _spreadsheet():
+    creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=SCOPES)
+    sh = gspread.authorize(creds).open_by_key(st.secrets["sheets"]["sheet_id"])
+    _ensure_seeded(sh)
+    return sh
+
+
+def _ensure_seeded(sh):
+    titles = [ws.title for ws in sh.worksheets()]
+    if "Sessions" not in titles:
+        ws = sh.add_worksheet("Sessions", rows=400, cols=len(SESSION_COLS))
+        ws.append_row(SESSION_COLS, value_input_option=RAW)
+        rows = []
+        for s in seed_data.SESSIONS:
+            r = dict(s)
+            r.setdefault("id", uuid.uuid4().hex[:10])
+            rows.append([str(r.get(c, "")) for c in SESSION_COLS])
+        if rows:
+            ws.append_rows(rows, value_input_option=RAW)
+    if "Participants" not in titles:
+        ws = sh.add_worksheet("Participants", rows=800, cols=2)
+        ws.append_row(["pod", "email"], value_input_option=RAW)
+        rows = [[pod, e] for pod, lst in seed_data.PARTICIPANTS.items() for e in lst]
+        if rows:
+            ws.append_rows(rows, value_input_option=RAW)
+    if "PodLeads" not in titles:
+        ws = sh.add_worksheet("PodLeads", rows=50, cols=3)
+        ws.append_row(["pod", "owner", "lead"], value_input_option=RAW)
+        rows = [[pod, v.get("owner", ""), v.get("lead", "")] for pod, v in seed_data.POD_LEADS.items()]
+        if rows:
+            ws.append_rows(rows, value_input_option=RAW)
+
+
+def _ws(name):
+    return _spreadsheet().worksheet(name)
+
+
+@st.cache_data(ttl=30)
+def _records(name):
+    return _ws(name).get_all_records()
+
+
+def _flush():
+    _records.clear()
+
+
+# ---- Sessions ----
+def get_sessions():
+    out = []
+    for r in _records("Sessions"):
+        r = dict(r)
+        r["id"] = str(r.get("id", ""))
+        for c in SESSION_COLS:
+            r[c] = str(r.get(c, ""))
+        out.append(r)
+    return out
+
+
+def save_session(rec):
+    ws = _ws("Sessions")
+    recs = _records("Sessions")
+    if rec.get("id"):
+        for i, r in enumerate(recs):
+            if str(r.get("id")) == str(rec["id"]):
+                ws.update(range_name=f"A{i + 2}", values=[[str(rec.get(c, "")) for c in SESSION_COLS]],
+                          value_input_option=RAW)
+                _flush()
+                return rec
+    rec["id"] = rec.get("id") or uuid.uuid4().hex[:10]
+    ws.append_row([str(rec.get(c, "")) for c in SESSION_COLS], value_input_option=RAW)
+    _flush()
+    return rec
+
+
+def delete_session(sid):
+    ws = _ws("Sessions")
+    for i, r in enumerate(_records("Sessions")):
+        if str(r.get("id")) == str(sid):
+            ws.delete_rows(i + 2)
+            break
+    _flush()
+
+
+def set_gcal_id(sid, gcal_id):
+    ws = _ws("Sessions")
+    col = SESSION_COLS.index("gcal_id") + 1
+    for i, r in enumerate(_records("Sessions")):
+        if str(r.get("id")) == str(sid):
+            ws.update_cell(i + 2, col, gcal_id)
+            break
+    _flush()
+
+
+# ---- Participants ----
+def get_participants():
+    d = {}
+    for r in _records("Participants"):
+        d.setdefault(str(r.get("pod", "")), []).append(str(r.get("email", "")))
+    return d
+
+
+def add_participant(pod, email):
+    if email in get_participants().get(pod, []):
+        return
+    _ws("Participants").append_row([pod, email], value_input_option=RAW)
+    _flush()
+
+
+def remove_participant(pod, email):
+    ws = _ws("Participants")
+    for i, r in enumerate(_records("Participants")):
+        if str(r.get("pod")) == pod and str(r.get("email")) == email:
+            ws.delete_rows(i + 2)
+            break
+    _flush()
+
+
+# ---- Pod leads ----
+def get_pod_leads():
+    d = {}
+    for r in _records("PodLeads"):
+        d[str(r.get("pod", ""))] = {"owner": str(r.get("owner", "")), "lead": str(r.get("lead", ""))}
+    return d
+
+
+def set_pod_lead(pod, field, email):
+    ws = _ws("PodLeads")
+    col = 2 if field == "owner" else 3
+    for i, r in enumerate(_records("PodLeads")):
+        if str(r.get("pod")) == pod:
+            ws.update_cell(i + 2, col, email)
+            _flush()
+            return
+    ws.append_row([pod, email if field == "owner" else "", email if field == "lead" else ""], value_input_option=RAW)
+    _flush()
+
+
+def invitees(pod):
+    leads = get_pod_leads().get(pod, {})
+    out = []
+    for e in (leads.get("owner", ""), leads.get("lead", "")):
+        if e and e not in out:
+            out.append(e)
+    for e in get_participants().get(pod, []):
+        if e not in out:
+            out.append(e)
+    return out
+
+"""Google Calendar sync. Safe to import even when unconfigured.
+
+Configure by adding [gcp_service_account] and [app] to .streamlit/secrets.toml
+(see secrets.toml.example). Until then, is_configured() returns False and the
+app falls back to .ics export so you can still validate the workflow.
+"""
+
+import streamlit as st
+
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
+TZ = "Asia/Kolkata"
+
+TYPE_TAG = {"module": "", "fireside": "[Fireside] ", "assessment": "[Assessment] ", "activity": "[Activity] "}
+
+
+def is_configured():
+    try:
+        return "gcp_service_account" in st.secrets and "app" in st.secrets \
+            and st.secrets["app"].get("calendar_id")
+    except Exception:
+        return False
+
+
+def _service():
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    info = dict(st.secrets["gcp_service_account"])
+    kwargs = {"scopes": SCOPES}
+    impersonate = st.secrets["app"].get("impersonate")
+    if impersonate:
+        kwargs["subject"] = impersonate  # domain-wide delegation -> invites send as this user
+    creds = service_account.Credentials.from_service_account_info(info, **kwargs)
+    return build("calendar", "v3", credentials=creds, cache_discovery=False)
+
+
+def _body(session, invitee_emails):
+    tag = TYPE_TAG.get(session.get("type", "module"), "")
+    return {
+        "summary": f'{tag}{session["title"]} — {session["pod"]}',
+        "location": session.get("loc", ""),
+        "description": (f'Faculty: {session.get("faculty","")} | Mode: {session.get("mode","")} '
+                        f'| Status: {session.get("status","")}\n{session.get("note","")}'),
+        "start": {"dateTime": f'{session["date"]}T{session["start"]}:00', "timeZone": TZ},
+        "end":   {"dateTime": f'{session["date"]}T{session["end"]}:00',   "timeZone": TZ},
+        "attendees": [{"email": e} for e in invitee_emails],
+        "status": "confirmed" if session.get("status") == "confirmed" else "tentative",
+    }
+
+
+def upsert_event(session, invitee_emails):
+    """Create or update the calendar event; returns the Google event id."""
+    svc = _service()
+    cal = st.secrets["app"]["calendar_id"]
+    body = _body(session, invitee_emails)
+    if session.get("gcal_id"):
+        ev = svc.events().update(calendarId=cal, eventId=session["gcal_id"],
+                                 body=body, sendUpdates="all").execute()
+    else:
+        ev = svc.events().insert(calendarId=cal, body=body, sendUpdates="all").execute()
+    return ev["id"]
+
+
+# ---- Offline fallback: .ics export (works with zero setup) ----
+def _ics_dt(date, time):
+    return date.replace("-", "") + "T" + time.replace(":", "") + "00"
+
+
+def _esc(s):
+    return (s or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", " ")
+
+
+def build_ics(sessions, invitees_fn):
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Prism Academy//Calendar//EN", "CALSCALE:GREGORIAN"]
+    for s in sessions:
+        tag = TYPE_TAG.get(s.get("type", "module"), "")
+        lines += ["BEGIN:VEVENT", f'UID:prism-{s.get("id","")}@prismacademy',
+                  f'DTSTART:{_ics_dt(s["date"], s["start"])}', f'DTEND:{_ics_dt(s["date"], s["end"])}',
+                  f'SUMMARY:{_esc(tag + s["title"] + " — " + s["pod"])}']
+        if s.get("loc"):
+            lines.append(f'LOCATION:{_esc(s["loc"])}')
+        lines.append(f'DESCRIPTION:{_esc("Faculty: " + s.get("faculty","") + " | Mode: " + s.get("mode",""))}')
+        for e in invitees_fn(s["pod"]):
+            lines.append(f'ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN={e}:mailto:{e}')
+        lines += [f'STATUS:{"CONFIRMED" if s.get("status")=="confirmed" else "TENTATIVE"}', "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines)
+
+# Prism Academy — Session Calendar (Streamlit)
+
+A month-on-month training calendar for Prism Academy programs (pods). Pod owners
+schedule faculty sessions; a program admin oversees everything; participants get
+invited on Google Calendar sync. Built to validate the tool first, then port into
+MyHQ later.
+
+## Step 1 — Check it locally (no Google setup needed)
+
+```bash
+cd prism-session-calendar
+python -m venv .venv && source .venv/bin/activate     # optional
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+Opens at http://localhost:8501. Data seeds from `seed_data.py` into
+`data_store.json` (delete that file to reset). You can:
+
+- Browse the month calendar (opens on June 2026, where the data starts)
+- Switch **Preview as**: Program admin / Pod owner / Others (role simulator)
+- Add / edit / delete sessions, manage participants
+- As **Program admin**, reassign pod owner + content lead
+- **Export .ics** and import it into Google Calendar right away
+
+Everything works offline at this stage — this is the version to share and validate.
+
+## Step 2 — Turn on live Google Calendar sync
+
+1. In Google Cloud: create a project, enable **Google Calendar API**.
+2. Create a **Service Account**, download its JSON key.
+3. Create a shared calendar ("Prism Academy") and share it with the service
+   account email (Make changes to events).
+4. To send invitations to participants (HomeLane + Design Cafe), have a Workspace
+   admin enable **domain-wide delegation** for the service account with scope
+   `https://www.googleapis.com/auth/calendar`.
+5. `cp .streamlit/secrets.toml.example .streamlit/secrets.toml` and fill in the
+   service-account fields, `calendar_id`, and `impersonate`.
+
+Restart the app: the **Sync to Google Calendar** button now creates/updates events
+with attendees. Each event's id is saved back onto the session, so re-syncing
+**updates** events instead of duplicating them.
+
+## Step 3 — Shared data (multi-user)  ✅ built in
+
+The app auto-selects its backend:
+
+- **Local file** (`backend_local.py` → `data_store.json`) when Sheets isn't configured.
+- **Google Sheets** (`backend_sheets.py`) when it is — shared, persistent, multi-user.
+
+To switch on Google Sheets:
+
+1. Create a Google Sheet (any blank one).
+2. Share it with the **service-account client_email** (from `[gcp_service_account]`) as **Editor**.
+3. Copy the sheet ID (the string in the URL between `/d/` and `/edit`) into
+   `[sheets].sheet_id` in `secrets.toml`.
+
+On first load the app creates three tabs — `Sessions`, `Participants`, `PodLeads` —
+and seeds them from `seed_data.py`. After that, every edit reads/writes the sheet,
+so all users share one source of truth and edits persist across restarts. The
+sidebar shows which backend is active. (This is also what makes edits stick on
+Streamlit Community Cloud, whose local disk is ephemeral.)
+
+## Step 4 — Real login + roles
+
+Swap the sidebar "Preview as" radio in `app.py` for Streamlit's native auth:
+
+```python
+if not st.user.is_logged_in:
+    st.button("Sign in", on_click=st.login); st.stop()
+role = resolve_role(st.user.email)
+```
+
+Configure a Google OIDC provider in `secrets.toml` and restrict to homelane.com /
+designcafe.com. `resolve_role()` already maps email → admin / pod owner / others.
+
+## Step 5 — Deploy / port to MyHQ
+
+- **Interim host:** internal container or Streamlit with the OIDC gate on
+  (avoid unauthenticated public hosting — participant emails are internal PII).
+- **Long term:** rebuild the UI as a **MyHQ plugin** (React micro-frontend). The
+  `calendar_sync` logic and data model carry straight over; MyHQ provides login,
+  identity → role, and hosting.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `app.py` | Streamlit UI (calendar, sessions, participants, roles) |
+| `store.py` | Local JSON persistence (swap for Google Sheets in Step 3) |
+| `calendar_sync.py` | Google Calendar upsert + `.ics` fallback |
+| `seed_data.py` | Real Dovetail + Advanced (Sr. DC) data, pods, faculty, participants |
+
+streamlit>=1.42
+streamlit-calendar>=1.3
+google-api-python-client>=2.130
+google-auth>=2.30
+gspread>=6.0
+
+"""Seed data for the Prism Academy session calendar.
+
+On first run, store.py copies this into a local data_store.json that the app
+reads/writes. Delete data_store.json to reset back to this seed.
+"""
+
+# Pods (programs). `short` is the key stored on each session.
+PODS = [
+    {"short": "Foundation (DC)",   "name": "Residential Interior Design Program – Foundation (Design Consultant)", "color": "#4A6741"},
+    {"short": "Advanced (Sr. DC)", "name": "Advanced Interior Design Management & Leadership Program (Sr. DC)",     "color": "#B98A2E"},
+    {"short": "Dovetail",          "name": "Dovetail Program (DA to DC)",                                          "color": "#2F6B6B"},
+    {"short": "Design Manager",    "name": "Design Manager Program",                                               "color": "#B65C3C"},
+    {"short": "Entrepreneurship",  "name": "Interior Design Entrepreneurship: The Business Playbook",              "color": "#7C6A9C"},
+    {"short": "Campus Capstone",   "name": "Campus Capstone Program for Designers",                                "color": "#55708A"},
+]
+
+ADMIN_EMAIL = "pavithra.s@homelane.com"
+
+# Pod owner + content lead per pod (editable by the program admin).
+POD_LEADS = {
+    "Foundation (DC)":   {"owner": "sachin.n@homelane.com",   "lead": "anviti.bhartiya@homelane.com"},
+    "Advanced (Sr. DC)": {"owner": "shilpee.p@homelane.com",  "lead": "anviti.bhartiya@homelane.com"},
+    "Dovetail":          {"owner": "rubin.jones@homelane.com","lead": "bhumika.s@homelane.com"},
+    "Design Manager":    {"owner": "meera.a@homelane.com",    "lead": "bhumika.s@homelane.com"},
+    "Entrepreneurship":  {"owner": "shilpee.p@homelane.com",  "lead": ""},
+    "Campus Capstone":   {"owner": "shilpee.p@homelane.com",  "lead": ""},
+}
+
+# Faculty -> internal/external (used to auto-tag the picker).
+FACULTY = {
+    "Mathen Thomas": "internal", "Venkatesh": "internal", "Tanuj Choudhry": "internal",
+    "Yeshwanth Chetty": "internal", "Sahana J Kashyap": "internal", "Aishwarya Srinivasan": "internal",
+    "Levi Lawrence": "internal", "Anviti Bhartiya": "internal", "Vysnavi Anandaraj": "internal",
+    "Somesh Manoharan": "internal", "Vivek Das (Vik)": "internal", "Surojit Ghosh": "internal",
+    "Sushma Gowda": "internal", "Padmaja Das": "internal", "Archana M": "internal", "Abishek R": "internal",
+    "Meera A": "internal", "Rajeev": "internal", "PRISM Team": "internal", "Internal HL/DC": "internal",
+    "Maansi": "external", "Sachin Shetty": "external", "CIBI": "external", "Rajiv": "external",
+    "Sachin": "external", "Gagan": "external", "Abhishek Bij": "external", "Shilpa Singh": "external",
+    "Rajiv Bhakat": "external", "Maansi G": "external", "Abhishek/Design head": "external",
+    "Via Email / WhatsApp": "internal", "Share via email": "internal", "To be decided": "internal",
+}
+
+# Participants (email IDs) per pod -> invited on Google Calendar sync alongside owner + lead.
+PARTICIPANTS = {
+    "Design Manager": [], "Entrepreneurship": [], "Campus Capstone": [],
+    "Foundation (DC)": [
+        "diksha.sharma@homelane.com", "pradeep.g@homelane.com", "swarnnim.jaiswal@homelane.com",
+        "subhankar.saha@homelane.com", "pradipta.paul@homelane.com", "shruti.su@homelane.com",
+        "ayasha.d@homelane.com", "aanchal.haveliker@homelane.com", "sanjay.peters@homelane.com",
+        "tejaswini.pawar@homelane.com", "kavya.m@homelane.com", "simran.agarwal@homelane.com",
+        "vrushali.chavan@homelane.com", "deekonda.lakhmi@homelane.com", "shreya.rajesh@homelane.com",
+        "swarnika.b@homelane.com", "sandhya.ravichandran@homelane.com", "mariyam.asif@homelane.com",
+        "tanushree.gupta@homelane.com", "archana.dubey@homelane.com", "tanya.singh@homelane.com",
+        "dhruv.gajjar@homelane.com", "himashree.nath@homelane.com", "syed.esfar@homelane.com",
+        "mythili.akanksha@homelane.com", "rahul.krishnan@homelane.com", "devshree.g@homelane.com",
+        "vishnupriya.a@homelane.com", "choragudi.khyathi@designcafe.com", "jaicy.valliara@designcafe.com",
+        "purnima.gupta@designcafe.com", "prashika.phillips@designcafe.com", "khushi.agarwal1@designcafe.com",
+        "powlushi.dutta@designcafe.com", "pranjal.patil@designcafe.com", "kritika.shah@designcafe.com",
+        "roshini.s@designcafe.com", "riya.panickar@designcafe.com", "sabita.bisht@designcafe.com",
+        "ritika.singh@designcafe.com", "sahideena.afrin@designcafe.com", "indrani.das@designcafe.com",
+        "sejal.shubhanand@homelane.com",
+        "sayali.thakur@homelane.com", "pratheeka.k@homelane.com", "priti.sutar@homelane.com",
+        "pratiksha.thorat@homelane.com", "kunali.gourigolla@homelane.com",
+    ],
+    "Dovetail": [
+        "Poulomi.Banik@homelane.com", "Anchita.Nair@homelane.com", "Chandrika.Sah@homelane.com",
+        "sheethal.shetty@homelane.com", "akshaya.santhanam@homelane.com", "vaibhav.s2@homelane.com",
+        "dinesh.muthuraj@homelane.com", "mudassir.ahmed@homelane.com", "ajith.kumar@homelane.com",
+        "veeresh.ts@homelane.com", "sarvesh.parab@homelane.com", "varalakshmi.r@homelane.com",
+        "preethi.arulsamy@homelane.com", "yashasvi.kabra@homelane.com", "steffi.agarwal@homelane.com",
+        "divyanshi.jain@homelane.com", "rupam.saxena@homelane.com", "vaibhavi.mahajan@homelane.com",
+        "Aayushi.Singh@homelane.com", "dyawara.amulya@homelane.com", "vimalarasi.gv@homelane.com",
+        "manisha.moni@homelane.com", "badruddeen.ismail@homelane.com", "Manvitha.Bondugula@homelane.com",
+        "sanya.kapoor@homelane.com", "srushti.desai@homelane.com", "vishnu.paviraj@homelane.com",
+        "nihal.choudhary@homelane.com", "priyanka.gawas@homelane.com", "shreya.jain@homelane.com",
+        "tausif.md@homelane.com", "Rishipriya.j@homelane.com", "paramita.das@homelane.com",
+        "Arpita.b2@homelane.com", "Srestha.Bhadra@homelane.com", "beejashree.thapa@homelane.com",
+        "nidhi.takrani@homelane.com", "uchithra.raja@homelane.com", "divyashree.s@homelane.com",
+        "vidhi.bahedia@homelane.com", "santhana.mari@homelane.com", "jayarani.n@homelane.com",
+        "akash.s@homelane.com",
+    ],
+    "Advanced (Sr. DC)": [
+        "aditya.chauhan@homelane.com", "manshi.sharma@homelane.com", "aditi.singh@homelane.com",
+        "sanskruti.pagey@homelane.com", "vinita.l@homelane.com", "drishti.b2@homelane.com",
+        "vishal.kumar@homelane.com", "tanushree.chaterjee@homelane.com", "ripon.chandra@homelane.com",
+        "dilshad.anjum@homelane.com", "medha.bhattacharjee@homelane.com", "anusha.mullangi@homelane.com",
+        "pratyasha.g@homelane.com", "suravi.b@homelane.com", "oeindrila.roy@homelane.com",
+        "aashi.agarwal@homelane.com", "sushmitha.srinivasan@homelane.com", "selvakumar.joshiearnest@homelane.com",
+        "ananya.upadhyay@homelane.com", "sonu.patel@homelane.com", "mahima.murjchandani@homelane.com",
+        "sheetal.j@homelane.com", "chandni.s@homelane.com", "sandhya.narayanan@homelane.com",
+        "irfan.m@homelane.com", "rabiya.b@homelane.com", "priyadharshini.i@homelane.com",
+        "shanmathi.m@designcafe.com", "aditi.baazi@designcafe.com", "prachi.mahale@designcafe.com",
+        "simran.agarwal@designcafe.com", "divyakshi.sarang@designcafe.com", "shubham.kalhapuream@designcafe.com",
+        "vivek.rawat@designcafe.com", "viresh.chopra@designcafe.com", "akanksha.dhamnaskar@designcafe.com",
+        "pooja.kumbharkar@designcafe.com", "shefali.tyagi@designcafe.com", "gourav.shrivastava@designcafe.com",
+        "venkatesh.putcha@designcafe.com", "chinmayee.patra@designcafe.com", "hanny.srivastav@designcafe.com",
+        "priyashi.panda@designcafe.com", "shaikh.subhan@designcafe.com", "faisul.rahman@designcafe.com",
+    ],
+}
+
+
+def _s(pod, typ, title, fac, fkind, date, start, end, status, mode, loc="", note=""):
+    return {"pod": pod, "type": typ, "title": title, "faculty": fac, "fkind": fkind,
+            "date": date, "start": start, "end": end, "status": status, "mode": mode,
+            "loc": loc, "note": note, "gcal_id": ""}
+
+
+SESSIONS = [
+    # ---- Dovetail (all virtual) ----
+    _s("Dovetail", "module", "Leadership Induction", "Tanuj Choudhry", "internal", "2026-06-15", "11:00", "11:30", "confirmed", "virtual", "", "Day 1. Program objective, expectations, success definition."),
+    _s("Dovetail", "module", "Process Overview", "Mathen Thomas", "internal", "2026-06-15", "12:30", "13:30", "confirmed", "virtual", "", "Lead to OB to Design to Production to Execution. Prep a presentation for the mock pitch."),
+    _s("Dovetail", "module", "Lead & CRM Basics", "Yeshwanth Chetty", "internal", "2026-06-17", "11:30", "13:00", "confirmed", "virtual", "", "Day 2. Roster flow. Refresher + system demo."),
+    _s("Dovetail", "module", "SC Pro Advanced", "To be confirmed", "internal", "2026-06-17", "13:30", "14:30", "proposed", "virtual", "", "SpaceCraft Pro UI, design wizard, Lookbook, Horizon, Photon. Faculty & time TBC."),
+    _s("Dovetail", "module", "Designer Role & Performance", "Sahana J Kashyap", "internal", "2026-06-18", "11:30", "12:00", "confirmed", "virtual", "", "Day 3. Roles, career progression, incentives, performance management."),
+    _s("Dovetail", "module", "Product Fundamentals", "Aishwarya Srinivasan", "internal", "2026-06-18", "12:00", "14:00", "confirmed", "virtual", "", "Intro to modular interiors, product catalogue."),
+    _s("Dovetail", "module", "HDS 101", "Levi Lawrence", "internal", "2026-06-19", "11:30", "13:00", "confirmed", "virtual", "", "Day 4. Civil work, demolition, countertops, tiles; false ceiling & electrical."),
+    _s("Dovetail", "assessment", "Assignment 1", "Anviti Bhartiya", "internal", "2026-06-20", "09:00", "18:00", "confirmed", "virtual", "", "Weekend. Custom to Persona Design + Categories, full 1st design output. Submit by Monday."),
+    _s("Dovetail", "module", "HDS Drawings", "Vysnavi Anandaraj", "internal", "2026-06-22", "11:30", "13:00", "confirmed", "virtual", "", "Day 5. Traded goods along with 2Ds."),
+    _s("Dovetail", "module", "RFQ along with Drawings", "Somesh Manoharan", "internal", "2026-06-22", "13:30", "14:30", "confirmed", "virtual", "", "New RFQ Tool quoting process. Custom workflow."),
+    _s("Dovetail", "module", "Operational Design Validation", "Vivek Das (Vik)", "internal", "2026-06-24", "11:30", "13:00", "confirmed", "virtual", "", "Day 6. D1 visits, masking, design sign-off, D3 visits; ops collaboration."),
+    _s("Dovetail", "module", "Execution Reality", "Surojit Ghosh", "internal", "2026-06-24", "13:30", "14:30", "confirmed", "virtual", "", "Real failures, ops challenges, design errors; production & delivery."),
+    _s("Dovetail", "module", "Non-Standard Handling", "Sushma Gowda", "internal", "2026-06-25", "11:30", "13:00", "confirmed", "virtual", "", "Day 7. Avoidance, process, escalation."),
+    _s("Dovetail", "module", "The Power of Consistency", "Maansi", "external", "2026-06-25", "13:30", "15:00", "confirmed", "virtual", "", ""),
+    _s("Dovetail", "assessment", "Assignment 2", "To be confirmed", "internal", "2026-06-27", "09:00", "18:00", "proposed", "virtual", "", "Weekend. Custom + NSD to Persona Design + Categories, full output. Faculty TBC."),
+    _s("Dovetail", "module", "Quote Optimization", "Padmaja Das", "internal", "2026-06-29", "11:30", "13:00", "confirmed", "virtual", "", "Day 8. Working to a budget & best design practices."),
+    _s("Dovetail", "module", "Quality Check", "Archana M", "internal", "2026-06-29", "13:30", "14:30", "confirmed", "virtual", "", "Why QC is needed. QC process, rework handling."),
+    _s("Dovetail", "module", "Quote 101", "Abishek R", "internal", "2026-07-01", "11:30", "12:30", "confirmed", "virtual", "", "Day 9. How to read and compare the quote."),
+    _s("Dovetail", "module", "DCC / DA Support", "Meera A", "internal", "2026-07-01", "13:00", "13:30", "confirmed", "virtual", "", "DCC/DA workflow and what to expect."),
+    _s("Dovetail", "module", "Designing for Lifestyles", "Rajeev", "internal", "2026-07-02", "11:30", "13:00", "confirmed", "virtual", "", "Day 10. Lifestyle decoding, empathy frameworks."),
+    _s("Dovetail", "module", "The Art & Science of Customer Pitches", "Sachin Shetty", "external", "2026-07-03", "11:30", "13:00", "confirmed", "virtual", "", "Pitch diamond, storytelling for design presentations."),
+    _s("Dovetail", "assessment", "Mock Pitch / DCC Evaluation", "Mock Pitch Panel", "internal", "2026-07-08", "11:30", "13:00", "proposed", "virtual", "", "Days 11-12 (Wed-Fri, date TBC). Panel: Shilpee, Rubin, Anviti, Foram, Padmaja, Meera."),
+    # Practical exposure + certification placeholders (pod owner sets the real date)
+    _s("Dovetail", "activity", "Shadow: On-ground Activities", "Design Manager (allocates)", "internal", "2026-06-16", "15:00", "17:00", "proposed", "virtual", "", "PLACEHOLDER. Throughout: Measurement Meeting, Masking, D2 sign-off & D3 visit."),
+    _s("Dovetail", "activity", "Shadow: Design Discussions", "To be assigned", "internal", "2026-06-23", "14:00", "16:00", "proposed", "virtual", "", "PLACEHOLDER. 2 hrs. Observe real client meetings."),
+    _s("Dovetail", "activity", "Shadow: Walkthrough Meetings", "To be assigned", "internal", "2026-06-26", "14:00", "16:00", "proposed", "virtual", "", "PLACEHOLDER. 2 hrs. Understand site execution realities."),
+    _s("Dovetail", "activity", "Shadow: Closure Meetings", "To be assigned", "internal", "2026-06-30", "15:00", "16:00", "proposed", "virtual", "", "PLACEHOLDER. 1 hr. Observe sales closure dynamics."),
+    _s("Dovetail", "activity", "Mock Walkthroughs with Managers", "To be assigned", "internal", "2026-07-06", "14:00", "16:00", "proposed", "virtual", "", "PLACEHOLDER. 2 hrs. Practice client communication."),
+    _s("Dovetail", "activity", "HL Assessment Completion", "Self-paced", "internal", "2026-07-06", "10:00", "11:00", "proposed", "virtual", "", "PLACEHOLDER. Self-paced. Tool capability validation."),
+    _s("Dovetail", "assessment", "Mock Client Pitch (Certification)", "To be assigned", "internal", "2026-07-09", "11:30", "12:30", "proposed", "virtual", "", "PLACEHOLDER. 1 hr. Evaluate presentation ability."),
+    _s("Dovetail", "assessment", "DCC Evaluation (Certification)", "To be assigned", "internal", "2026-07-09", "14:00", "14:30", "proposed", "virtual", "", "PLACEHOLDER. 30 mins. Design Consultant readiness."),
+
+    # ---- Advanced (Sr. DC) ----
+    _s("Advanced (Sr. DC)", "module", "Orientation", "PRISM Team", "internal", "2026-06-08", "14:30", "15:30", "confirmed", "virtual", "", "Program kickoff: expectations, success definition."),
+    _s("Advanced (Sr. DC)", "assessment", "Pre-Program Assessment", "PRISM Team", "internal", "2026-06-08", "10:00", "11:00", "proposed", "virtual", "", "1 hr. Time TBC."),
+    _s("Advanced (Sr. DC)", "module", "Lab Day 1: Craft Leadership & Raising the Design Bar", "CIBI", "external", "2026-06-16", "10:00", "15:30", "confirmed", "inperson", "", "Lab Day 1. 5.5 hrs, in-person. Time TBC."),
+    _s("Advanced (Sr. DC)", "module", "Lab Day 2: Customer Excellence through Leadership", "Rajiv", "external", "2026-06-17", "10:00", "15:30", "confirmed", "inperson", "", "Lab Day 2. 5.5 hrs, in-person. Time TBC."),
+    _s("Advanced (Sr. DC)", "module", "Masterclass 1: Predictability at Scale", "Sachin", "external", "2026-07-02", "15:00", "17:00", "confirmed", "virtual", "", "4C: Contribution. 2 hrs."),
+    _s("Advanced (Sr. DC)", "fireside", "Fireside Chat: Book / Artist / Leadership Talk", "To be decided", "internal", "2026-07-09", "11:00", "12:00", "proposed", "virtual", "", "1 hr. Faculty & time TBC."),
+    _s("Advanced (Sr. DC)", "module", "Masterclass 2: Coaching for Design Success", "Maansi", "external", "2026-07-16", "11:00", "13:00", "confirmed", "virtual", "", "4C: Coaching. 2 hrs."),
+    _s("Advanced (Sr. DC)", "module", "Masterclass 3: The Art & Science of Customer Pitches", "Gagan", "external", "2026-08-06", "11:00", "13:00", "confirmed", "virtual", "", "2 hrs."),
+    _s("Advanced (Sr. DC)", "module", "Masterclass 4: The Strategic Shift", "Abhishek Bij", "external", "2026-08-12", "11:00", "13:00", "confirmed", "virtual", "", "4C: Customer. 2 hrs."),
+    _s("Advanced (Sr. DC)", "assessment", "Challenge: Leadership Through Impact", "PRISM Team", "internal", "2026-08-13", "10:00", "11:00", "confirmed", "virtual", "", "Challenge shared via email. Time TBC."),
+    _s("Advanced (Sr. DC)", "assessment", "Challenge Submission", "PRISM Team", "internal", "2026-09-04", "17:00", "18:00", "confirmed", "virtual", "", "Submission deadline (by end of day)."),
+    _s("Advanced (Sr. DC)", "module", "Masterclass 5: Playing the Long Game", "Shilpa Singh", "external", "2026-09-02", "11:00", "13:00", "confirmed", "virtual", "", "4C: Career. 2 hrs."),
+    _s("Advanced (Sr. DC)", "module", "Lab Day 3: From Strong Designers to Strong Systems", "Sachin", "external", "2026-09-15", "10:00", "15:30", "confirmed", "inperson", "", "Lab Day 3. 5.4 hrs, in-person. 4C: Craft + Contribution. Time TBC."),
+    _s("Advanced (Sr. DC)", "module", "Lab Day 4: Culmination", "Internal HL/DC", "internal", "2026-09-16", "10:00", "14:00", "confirmed", "inperson", "", "Lab Day 4. 4 hrs, in-person. Time TBC."),
+    _s("Advanced (Sr. DC)", "activity", "Post Read: Playbook", "PRISM Team", "internal", "2026-09-22", "10:00", "11:00", "proposed", "virtual", "", "Post-read playbook, self-paced. Placeholder time."),
+
+    # ---- Foundation (DC) — PRISM Junior Cohort, Jun-Sep 2026 ----
+    _s("Foundation (DC)", "module", "Orientation", "PRISM Team", "internal", "2026-06-12", "12:00", "13:00", "confirmed", "virtual", "", "Program kickoff. 1 hr."),
+    _s("Foundation (DC)", "assessment", "Pre-Program Assessment", "Via Email / WhatsApp", "internal", "2026-06-12", "10:00", "11:00", "proposed", "virtual", "", "1 hr. Shared via email/WhatsApp. Time TBC."),
+    _s("Foundation (DC)", "module", "Design Studio (Lab)", "Rajiv Bhakat", "external", "2026-06-15", "10:00", "16:00", "confirmed", "inperson", "", "Lab. 6 hrs, in-person. Time TBC."),
+    _s("Foundation (DC)", "module", "Customer Experience Lab", "Rajiv Bhakat", "external", "2026-06-16", "09:00", "17:00", "confirmed", "inperson", "", "Lab. 8 hrs, in-person. Time TBC."),
+    _s("Foundation (DC)", "module", "Masterclass 1: The Power of Consistency", "Maansi G", "external", "2026-07-02", "11:00", "13:00", "confirmed", "virtual", "", "2 hrs."),
+    _s("Foundation (DC)", "fireside", "Fireside Chat: Book / Artist / Leadership Talk", "To be decided", "internal", "2026-07-09", "11:00", "12:00", "proposed", "virtual", "", "1 hr. Faculty & time TBC."),
+    _s("Foundation (DC)", "module", "Masterclass 2: Bringing Lifestyles to Life", "Rajiv", "external", "2026-07-15", "11:00", "13:00", "confirmed", "virtual", "", "2 hrs."),
+    _s("Foundation (DC)", "module", "Masterclass 3: The Art & Science of Customer Pitches", "Gagan", "external", "2026-08-06", "11:00", "13:00", "confirmed", "virtual", "", "2 hrs."),
+    _s("Foundation (DC)", "module", "Masterclass 4: The Strategic Shift", "Abhishek/Design head", "external", "2026-08-12", "11:00", "13:00", "confirmed", "virtual", "", "2 hrs."),
+    _s("Foundation (DC)", "assessment", "Design Challenge", "Share via email", "internal", "2026-08-19", "10:00", "11:00", "confirmed", "virtual", "", "Shared via email. Time TBC."),
+    _s("Foundation (DC)", "assessment", "Breakthrough Project Submission", "PRISM Team", "internal", "2026-09-03", "17:00", "18:00", "confirmed", "virtual", "", "Submission deadline (by end of day)."),
+    _s("Foundation (DC)", "module", "Lab: From Designers to Trusted Decision Partners", "Sachin", "external", "2026-09-08", "10:00", "14:30", "confirmed", "inperson", "", "Lab. 4.5 hrs, in-person. Time TBC."),
+    _s("Foundation (DC)", "module", "Lab: PRISM Culmination Day", "Internal HL/DC", "internal", "2026-09-09", "10:00", "14:30", "confirmed", "inperson", "", "Lab. 4.5 hrs, in-person. Time TBC."),
+    _s("Foundation (DC)", "activity", "Post Read: MC Takeaway Document", "PRISM Team", "internal", "2026-09-15", "10:00", "11:00", "proposed", "virtual", "", "Post-read takeaway document, self-paced."),
+]
+
+"""Data store facade. Picks the backend automatically:
+
+- Google Sheets (shared, multi-user, persistent) when secrets.toml has
+  [gcp_service_account] and [sheets].sheet_id.
+- Local JSON file (single machine, zero setup) otherwise.
+
+The app only ever calls store.* — the backend swap is invisible to it.
+"""
+
+import streamlit as st
+
+
+def _use_sheets():
+    try:
+        return ("gcp_service_account" in st.secrets
+                and "sheets" in st.secrets
+                and bool(st.secrets["sheets"].get("sheet_id")))
+    except Exception:
+        return False
+
+
+if _use_sheets():
+    from backend_sheets import *  # noqa: F401,F403
+    BACKEND = "Google Sheets (shared)"
+else:
+    from backend_local import *  # noqa: F401,F403
+    BACKEND = "Local file (single machine)"
