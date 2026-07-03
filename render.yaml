@@ -1,0 +1,17 @@
+# Render.com blueprint for the Prism Streamlit app.
+# Deploy: render.com → New → Blueprint → pick this repo → Apply.
+services:
+  - type: web
+    name: prism-session-calendar
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.4"
+    # For multi-user shared data + Google Calendar sync, add a Render "Secret File":
+    #   Filename: .streamlit/secrets.toml
+    #   Contents: copy from .streamlit/secrets.toml.example with your real values
+    #   (service-account JSON, [sheets] sheet_id, [app] calendar_id).
+    # Without it the app runs with local (ephemeral) storage.
