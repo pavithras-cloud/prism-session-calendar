@@ -6,14 +6,17 @@ can export .ics. Add secrets later to turn on live Google Calendar sync.
 """
 
 import datetime as dt
-import json
+import html as _html
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 import seed_data
 import store
 import calendar_sync as gc
+
+MONTHS = ["January", "February", "March", "April", "May", "June", "July",
+          "August", "September", "October", "November", "December"]
+DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 st.set_page_config(page_title="Prism Academy — Session Calendar", page_icon="📅", layout="wide")
 
@@ -41,130 +44,88 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def render_calendar_html(sessions, colors, fulls):
-    """A self-contained, Prism-branded month calendar (renders in an iframe)."""
-    tmpl = _CAL_TEMPLATE
-    tmpl = tmpl.replace("__SESSIONS__", json.dumps(sessions))
-    tmpl = tmpl.replace("__COLORS__", json.dumps(colors))
-    tmpl = tmpl.replace("__FULLS__", json.dumps(fulls))
-    return tmpl
+def _esc(s):
+    return _html.escape(str(s or ""))
 
 
-_CAL_TEMPLATE = r"""
+def _ft(t):
+    if not t:
+        return ""
+    h, m = t.split(":")
+    h = int(h)
+    ap = "AM" if h < 12 else "PM"
+    return f"{h % 12 or 12}:{m} {ap}"
+
+
+def _contrast(hexc):
+    c = hexc.lstrip("#")
+    r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    return "#23291d" if (r * 299 + g * 587 + b * 114) / 1000 > 150 else "#fff"
+
+
+def _shift_month(base, delta):
+    m = base.month - 1 + delta
+    return dt.date(base.year + m // 12, m % 12 + 1, 1)
+
+
+_GRID_STYLE = """
 <style>
-  :root{--forest:#4A6741;--cream:#EDFFE1;--gold:#F5B942;--muted:#66705C;--warm:#F5F8EF;--tint:#E7EEDB;--border:#DDE4CF;--text:#23291d}
-  *{box-sizing:border-box}
-  body{margin:0;font-family:'Segoe UI',system-ui,Arial,sans-serif;color:var(--text);background:#fff}
-  .bar{display:flex;align-items:center;gap:8px;padding:10px 4px}
-  .bar .ic{width:32px;height:32px;border:1px solid #C9D3BA;background:#fff;border-radius:6px;cursor:pointer;color:var(--forest);font-size:15px}
-  .bar .lbl{font-weight:800;color:var(--forest);min-width:150px;text-align:center;font-size:16px}
-  .bar .sp{flex:1}
-  .bar .seg button{border:1px solid #C9D3BA;background:#fff;padding:7px 13px;font-weight:700;font-size:12px;color:var(--muted);cursor:pointer}
-  .bar .seg button[aria-pressed=true]{background:var(--forest);color:#fff}
-  .bar .seg button:first-child{border-radius:6px 0 0 6px}.bar .seg button:last-child{border-radius:0 6px 6px 0;border-left:0}
-  .cal{border:1px solid var(--border);border-radius:12px;overflow:hidden}
-  .head,.grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
-  .head{background:var(--warm);border-bottom:1px solid var(--border)}
-  .head div{padding:8px 10px;font-size:10.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
-  .cell{border-right:1px solid var(--border);border-bottom:1px solid var(--border);min-height:104px;min-width:0;padding:5px 6px;display:flex;flex-direction:column;gap:3px}
-  .cell:nth-child(7n){border-right:0}
-  .cell.out{background:#FAFBF6}.cell.out .dn{color:#c1c6b6}
-  .cell.today .dn{background:var(--forest);color:var(--cream);width:22px;height:22px;border-radius:50%;display:grid;place-items:center}
-  .dn{font-size:12.5px;font-weight:700}
-  .pill{border:0;border-radius:5px;padding:3px 6px;font-size:10.5px;line-height:1.2;color:#fff;cursor:pointer;text-align:left;width:100%;min-width:0;border-left:3px solid rgba(0,0,0,.22)}
-  .pill.proposed{background-image:repeating-linear-gradient(45deg,transparent,transparent 5px,rgba(255,255,255,.28) 5px,rgba(255,255,255,.28) 10px)}
-  .pill b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .pill span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.9;font-size:9.5px}
-  .more{font-size:10.5px;color:var(--forest);background:none;border:0;cursor:pointer;text-align:left;font-weight:700}
-  .list .day{border-top:1px solid var(--border)}.list .day:first-child{border-top:0}
-  .list .dh{background:var(--warm);padding:8px 14px;font-weight:800;color:var(--forest);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em}
-  .row{display:grid;grid-template-columns:84px 1fr 130px 100px;gap:10px;padding:9px 14px;border-top:1px solid var(--border);font-size:13px;align-items:center;cursor:pointer}
-  .row:hover{background:var(--tint)}.row .t{font-weight:700;color:var(--forest)}.row .m{font-weight:700}
-  .sw{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px}
-  .bdg{font-size:10px;font-weight:800;padding:2px 8px;border-radius:999px;text-transform:uppercase}
-  .bdg.confirmed{background:#E5EFDC;color:var(--forest)}.bdg.proposed{background:#FBEDCF;color:#9A6A10}
-  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11.5px;color:var(--muted)}
-  .legend .k{width:18px;height:11px;border-radius:3px;display:inline-block;vertical-align:-1px;margin-right:5px}
-  .ov{position:fixed;inset:0;background:rgba(28,40,22,.5);display:none;align-items:flex-start;justify-content:center;padding:34px 14px;z-index:9}
-  .ov.open{display:flex}.modal{background:#fff;border-radius:12px;max-width:460px;width:100%}
-  .mh{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)}
-  .mh h2{margin:0;font-size:16px;color:var(--forest)}.mh button{border:0;background:none;font-size:19px;cursor:pointer;color:var(--muted)}
-  .mb{padding:16px 18px;display:grid;gap:10px;font-size:13.5px}
-  .kv .k{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-  .kv .v{font-weight:700;margin-top:1px}
+.pc-cal{border:1px solid #DDE4CF;border-radius:12px;overflow:hidden;background:#fff}
+.pc-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
+.pc-head{background:#F5F8EF;border-bottom:1px solid #DDE4CF}
+.pc-h{padding:8px 10px;font-size:10.5px;font-weight:700;color:#66705C;text-transform:uppercase;letter-spacing:.06em}
+.pc-cell{border-right:1px solid #DDE4CF;border-bottom:1px solid #DDE4CF;min-height:104px;min-width:0;padding:5px 6px}
+.pc-cell:nth-child(7n){border-right:0}
+.pc-cell.out{background:#FAFBF6}
+.pc-dn{font-size:12.5px;font-weight:700;color:#23291d}
+.pc-cell.out .pc-dn{color:#c1c6b6}
+.pc-cell.today .pc-dn{background:#4A6741;color:#EDFFE1;padding:1px 7px;border-radius:999px}
+.pc-pill{border-radius:5px;padding:3px 6px;margin-top:3px;font-size:10.5px;line-height:1.2;border-left:3px solid rgba(0,0,0,.22);overflow:hidden}
+.pc-pill b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pc-pill span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.9;font-size:9.5px}
+.pc-more{font-size:10.5px;color:#4A6741;font-weight:700;margin-top:2px}
 </style>
-<div class="bar">
-  <button class="ic" id="prev">&lsaquo;</button>
-  <div class="lbl" id="lbl">—</div>
-  <button class="ic" id="next">&rsaquo;</button>
-  <button class="ic" id="today" style="width:auto;padding:0 12px;font-size:12px;font-weight:700">Today</button>
-  <div class="sp"></div>
-  <div class="seg"><button id="vM" aria-pressed="true">Month</button><button id="vL" aria-pressed="false">List</button></div>
-</div>
-<div id="calView" class="cal"><div class="head" id="head"></div><div class="grid" id="grid"></div></div>
-<div id="listView" class="cal list" style="display:none"></div>
-<div class="legend" id="legend"></div>
-<div class="ov" id="ov"><div class="modal"><div class="mh"><h2 id="dT">Session</h2><button onclick="closeOv()">&times;</button></div><div class="mb" id="dB"></div></div></div>
-<script>
-  const S=__SESSIONS__, COLORS=__COLORS__, FULLS=__FULLS__;
-  const DOW=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-  const MO=["January","February","March","April","May","June","July","August","September","October","November","December"];
-  let cur=new Date(2026,5,1), view="month";
-  function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
-  function ft(t){if(!t)return"";let[h,m]=t.split(":");h=+h;let ap=h<12?"AM":"PM",hh=h%12||12;return hh+":"+m+" "+ap}
-  function col(p){return COLORS[p]||"#4A6741"}
-  function ct(hex){let c=hex.replace("#","");let r=parseInt(c.substr(0,2),16),g=parseInt(c.substr(2,2),16),b=parseInt(c.substr(4,2),16);return (r*299+g*587+b*114)/1000>150?"#23291d":"#fff"}
-  function inM(s){let d=new Date(s.date+"T00:00:00");return d.getFullYear()===cur.getFullYear()&&d.getMonth()===cur.getMonth()}
-  function legend(){document.getElementById("legend").innerHTML='<span><span class="k" style="background:#4A6741"></span>Confirmed</span><span><span class="k" style="background:#4A6741;background-image:repeating-linear-gradient(45deg,transparent,transparent 4px,rgba(255,255,255,.4) 4px,rgba(255,255,255,.4) 8px)"></span>Proposed</span>&nbsp;'+Object.keys(COLORS).map(p=>`<span title="${esc(FULLS[p]||p)}"><span class="k" style="background:${col(p)}"></span>${esc(p)}</span>`).join("")}
-  function render(){document.getElementById("calView").style.display=view==="month"?"":"none";document.getElementById("listView").style.display=view==="list"?"":"none";view==="month"?month():list()}
-  function month(){
-    document.getElementById("lbl").textContent=MO[cur.getMonth()]+" "+cur.getFullYear();
-    document.getElementById("head").innerHTML=DOW.map(d=>`<div>${d}</div>`).join("");
-    const g=document.getElementById("grid");g.innerHTML="";
-    const first=new Date(cur.getFullYear(),cur.getMonth(),1),off=(first.getDay()+6)%7,start=new Date(first);start.setDate(1-off);
-    const by={};S.forEach(s=>{(by[s.date]=by[s.date]||[]).push(s)});
-    const dim=new Date(cur.getFullYear(),cur.getMonth()+1,0).getDate(),cells=Math.ceil((off+dim)/7)*7;
-    const tIso=new Date().toISOString().slice(0,10);
-    for(let i=0;i<cells;i++){
-      const d=new Date(start);d.setDate(start.getDate()+i);
-      const iso=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
-      const out=d.getMonth()!==cur.getMonth();
-      const cell=document.createElement("div");cell.className="cell"+(out?" out":"")+(iso===tIso?" today":"");
-      cell.innerHTML=`<div><span class="dn">${d.getDate()}</span></div>`;
-      const items=(by[iso]||[]).sort((a,b)=>a.start.localeCompare(b.start));
-      items.slice(0,3).forEach(s=>cell.appendChild(pill(s)));
-      if(items.length>3){const b=document.createElement("button");b.className="more";b.textContent="+"+(items.length-3)+" more";b.onclick=()=>{view="list";sync();render()};cell.appendChild(b)}
-      g.appendChild(cell);
-    }
-  }
-  function pill(s){const b=document.createElement("button"),c=col(s.pod);b.className="pill "+s.status;if(s.status==="confirmed")b.style.background=c;else b.style.backgroundColor=c;b.style.color=ct(c);b.innerHTML=`<b>${ft(s.start)} ${esc(s.title)}</b><span>${esc(s.faculty)} · ${s.mode==="virtual"?"Virtual":"In person"}</span>`;b.onclick=()=>openD(s);return b}
-  function list(){
-    document.getElementById("lbl").textContent=MO[cur.getMonth()]+" "+cur.getFullYear();
-    const m=S.filter(inM).sort((a,b)=>a.date.localeCompare(b.date)||a.start.localeCompare(b.start)),box=document.getElementById("listView");
-    if(!m.length){box.innerHTML='<div style="padding:40px;text-align:center;color:#66705C">No sessions this month.</div>';return}
-    const g={};m.forEach(s=>{(g[s.date]=g[s.date]||[]).push(s)});let h="";
-    Object.keys(g).sort().forEach(dt=>{const d=new Date(dt+"T00:00:00");h+=`<div class="day"><div class="dh">${DOW[(d.getDay()+6)%7]}, ${d.getDate()} ${MO[d.getMonth()]}</div>`;g[dt].forEach((s,i)=>{h+=`<div class="row" data-k="${dt}|${i}"><div class="t">${ft(s.start)}</div><div class="m">${esc(s.title)}</div><div><span class="sw" style="background:${col(s.pod)}"></span>${esc(s.pod)}</div><div><span class="bdg ${s.status}">${s.status}</span></div></div>`});h+="</div>"});
-    box.innerHTML=h;box.querySelectorAll(".row").forEach(r=>{const[dt,i]=r.getAttribute("data-k").split("|");r.onclick=()=>openD(g[dt][+i])})
-  }
-  function openD(s){const c=col(s.pod);document.getElementById("dT").textContent=s.title;
-    document.getElementById("dB").innerHTML=`<div style="border-left:5px solid ${c};padding-left:11px"><div class="v" style="font-size:15px">${esc(FULLS[s.pod]||s.pod)}</div><span class="bdg ${s.status}">${s.status}</span> ${s.type&&s.type!=="module"?"· "+s.type:""}</div>
-    <div class="kv"><div class="k">Faculty</div><div class="v">${esc(s.faculty)} (${s.fkind||"internal"})</div></div>
-    <div class="kv"><div class="k">Date &amp; time</div><div class="v">${s.date} · ${ft(s.start)}${s.end?" – "+ft(s.end):""}</div></div>
-    <div class="kv"><div class="k">Mode</div><div class="v">${s.mode==="virtual"?"Virtual":"In person"}</div></div>
-    <div class="kv"><div class="k">${s.mode==="virtual"?"Meeting link":"Venue"}</div><div class="v">${s.loc?esc(s.loc):"—"}</div></div>
-    ${s.note?`<div style="background:var(--warm);border-radius:6px;padding:9px 11px;font-size:13px">${esc(s.note)}</div>`:""}`;
-    document.getElementById("ov").classList.add("open")}
-  function closeOv(){document.getElementById("ov").classList.remove("open")}
-  document.getElementById("ov").addEventListener("click",e=>{if(e.target.id==="ov")closeOv()});
-  function sync(){document.getElementById("vM").setAttribute("aria-pressed",view==="month");document.getElementById("vL").setAttribute("aria-pressed",view==="list")}
-  document.getElementById("prev").onclick=()=>{cur=new Date(cur.getFullYear(),cur.getMonth()-1,1);render()};
-  document.getElementById("next").onclick=()=>{cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);render()};
-  document.getElementById("today").onclick=()=>{const t=new Date();cur=new Date(t.getFullYear(),t.getMonth(),1);render()};
-  document.getElementById("vM").onclick=()=>{view="month";sync();render()};
-  document.getElementById("vL").onclick=()=>{view="list";sync();render()};
-  legend();render();
-</script>
 """
+
+
+def build_month_grid(cur, sessions, colors):
+    """Server-rendered (no-iframe) Prism-branded month grid. Robust on any host."""
+    import calendar as _cal
+    by = {}
+    for s in sessions:
+        by.setdefault(s["date"], []).append(s)
+    for k in by:
+        by[k].sort(key=lambda x: x["start"])
+    first = cur.replace(day=1)
+    off = first.weekday()  # Monday = 0
+    start = first - dt.timedelta(days=off)
+    dim = _cal.monthrange(cur.year, cur.month)[1]
+    cells = ((off + dim + 6) // 7) * 7
+    today = dt.date.today().isoformat()
+    head = "".join(f'<div class="pc-h">{d}</div>' for d in DOW)
+    body = ""
+    for i in range(cells):
+        d = start + dt.timedelta(days=i)
+        iso = d.isoformat()
+        cls = "pc-cell" + (" out" if d.month != cur.month else "") + (" today" if iso == today else "")
+        pills = ""
+        items = by.get(iso, [])
+        for s in items[:3]:
+            c = colors.get(s["pod"], "#4A6741")
+            if s["status"] == "confirmed":
+                bg = f"background:{c};"
+            else:
+                bg = (f"background-color:{c};background-image:repeating-linear-gradient(45deg,"
+                      "transparent,transparent 5px,rgba(255,255,255,.28) 5px,rgba(255,255,255,.28) 10px);")
+            pills += (f'<div class="pc-pill" style="{bg}color:{_contrast(c)}">'
+                      f'<b>{_esc(_ft(s["start"]))} {_esc(s["title"])}</b>'
+                      f'<span>{_esc(s["faculty"])} · {"Virtual" if s["mode"] == "virtual" else "In person"}</span></div>')
+        if len(items) > 3:
+            pills += f'<div class="pc-more">+{len(items) - 3} more</div>'
+        body += f'<div class="{cls}"><span class="pc-dn">{d.day}</span>{pills}</div>'
+    return (_GRID_STYLE + '<div class="pc-cal">'
+            f'<div class="pc-grid pc-head">{head}</div>'
+            f'<div class="pc-grid">{body}</div></div>')
 
 
 # ------------------------------------------------------------------ identity
@@ -210,7 +171,22 @@ tab_cal, tab_sessions, tab_people = st.tabs(["📅 Calendar", "📋 Sessions", "
 
 # ------------------------------------------------------------------ calendar
 with tab_cal:
-    components.html(render_calendar_html(sessions, POD_COLORS, POD_FULL), height=780, scrolling=True)
+    st.session_state.setdefault("cur", dt.date(2026, 6, 1))
+    nav = st.columns([1, 1, 1, 5])
+    if nav[0].button("‹ Prev", use_container_width=True):
+        st.session_state.cur = _shift_month(st.session_state.cur, -1)
+    if nav[1].button("Today", use_container_width=True):
+        _t = dt.date.today()
+        st.session_state.cur = dt.date(_t.year, _t.month, 1)
+    if nav[2].button("Next ›", use_container_width=True):
+        st.session_state.cur = _shift_month(st.session_state.cur, 1)
+    cur = st.session_state.cur
+    nav[3].markdown(f"### {MONTHS[cur.month - 1]} {cur.year}")
+    st.markdown(build_month_grid(cur, sessions, POD_COLORS), unsafe_allow_html=True)
+    st.markdown(
+        "**Programs:** " + "  ".join(f'<span style="color:{POD_COLORS[p]}">■</span> {p}' for p in POD_NAMES)
+        + '  ·  <span style="opacity:.65">striped = proposed</span>', unsafe_allow_html=True)
+    st.caption("Open the **Sessions** tab to see full details, add, or edit.")
 
     st.divider()
     c1, c2 = st.columns(2)
